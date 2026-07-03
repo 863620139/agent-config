@@ -1,0 +1,41 @@
+---
+description: Python 编码规范：禁止 getattr/hasattr 等反射用法，禁止函数内套函数
+alwaysApply: true
+---
+
+# Python 编码规范
+
+## 禁止反射式属性访问
+
+不允许使用 `getattr`、`hasattr`、`setattr`、`delattr` 等反射用法。直接访问属性；类型不确定时用 `isinstance` 判断后再访问。
+
+```python
+# ❌ BAD
+if hasattr(obj, "depth"):
+    value = getattr(obj, "depth", None)
+
+# ✅ GOOD
+if isinstance(obj, HoleInstance):
+    value = obj.depth
+```
+
+如果属性可能不存在，说明数据模型设计有问题，应该在类定义上补齐默认值，而不是用反射绕过。
+
+## 禁止函数内套函数
+
+不允许在函数体内再定义函数（嵌套 `def`）。把内部函数提取为模块级函数或类的私有方法。
+
+```python
+# ❌ BAD
+def process(items):
+    def is_valid(item):
+        return item.tag is not None
+    return [i for i in items if is_valid(i)]
+
+# ✅ GOOD
+def _is_valid(item):
+    return item.tag is not None
+
+def process(items):
+    return [i for i in items if _is_valid(i)]
+```
