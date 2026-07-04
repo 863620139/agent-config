@@ -25,12 +25,12 @@ git log --oneline -5
 
 ```bash
 git fetch upstream
-git stash --include-untracked   # 仅当有未提交修改时
+git stash push --include-untracked -m "commit-and-push-auto"   # 仅当有未提交修改时
 git rebase upstream/dev
-git stash pop                   # 仅当上一步 stash 过
+git stash pop                   # 仅当上一步 stash 过，rebase 成功后立即 pop
 ```
 
-- 若 rebase 出现冲突：停止操作，向用户报告冲突文件，等待用户决定，不要自行解决或 `git rebase --abort`（除非用户要求）。
+- 若 rebase 出现冲突：停止操作，向用户报告冲突文件，等待用户决定，不要自行解决或 `git rebase --abort`（除非用户要求）。**报告时提醒用户：改动还在 stash `commit-and-push-auto` 里。**
 - 若 `git stash pop` 出现冲突：同样停止并报告。
 
 ### 3. Commit
@@ -78,11 +78,13 @@ git push origin dev
 
 - 若因 rebase 改写了已推送的历史导致被拒绝，先向用户确认后再使用 `git push --force-with-lease origin dev`，绝不直接 `--force`。
 
-### 5. 确认结果
+### 5. 确认结果（含 stash 兜底恢复）
 
 ```bash
+git stash list   # 检查是否残留本流程创建的 stash
 git status
 git log --oneline -3
 ```
 
-向用户报告：commit 信息、推送结果。
+- **stash 兜底**：若 `git stash list` 中仍存在 `commit-and-push-auto`（说明步骤 2 的 pop 被跳过或失败后继续了），执行 `git stash pop` 恢复；pop 冲突则停止并报告。流程结束时不允许残留本流程创建的 stash。
+- 向用户报告：commit 信息、推送结果、stash 是否已全部恢复。
