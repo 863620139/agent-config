@@ -1,6 +1,6 @@
 ---
 name: jenkins-service-release
-description: 通过 Jenkins 触发算法服务镜像构建与 K8s 部署。与 git 发版分开。当用户说 Jenkins 发版、发布到预生产/算法重构、投图服务发版、数据处理服务发版、/jenkins-service-release 时使用。
+description: 通过 Jenkins 触发算法服务镜像构建与 K8s 部署。与 git 发版分开。当用户说 Jenkins 发版、发布到预生产/预发版/算法重构、投图服务/drawing2d/数据处理服务发版、/jenkins-service-release 时使用。
 ---
 
 # Jenkins Service Release
@@ -11,17 +11,18 @@ description: 通过 Jenkins 触发算法服务镜像构建与 K8s 部署。与 g
 
 从用户输入提取 **服务类型** 和 **目标环境**，映射为 Jenkins 参数：
 
-| 用户说法（服务） | 触发的 `serviceName`（可能多个） |
-|-----------------|--------------------------------|
-| 投图服务 | `ai-python-auto-dimension`、`ai-python-auto-dimension-part`（两个都发） |
-| 数据处理服务 | `ai-algorithm-stp-convert` |
+| 用户说法（服务） | `collection` | 触发的 `serviceName` |
+|-----------------|--------------|---------------------|
+| 投图服务 | `python-ai` | `ai-python-auto-dimension`、`ai-python-auto-dimension-part`（两个都发） |
+| 数据处理服务 | `python-ai` | `ai-algorithm-stp-convert` |
+| drawing2d / 二维投图 | `front-web-apps` | `do-web-apps-drawing`（固定一个） |
 
 | 用户说法（环境） | `profile` | `branch` |
 |-----------------|-----------|----------|
-| 预生产 / 生产环境 | `production` | `release` |
+| 预生产 / 预发版 / 生产环境 | `production` | `release` |
 | 算法重构 | `suanfa` | `dev` |
 
-`collection` 固定为 `python-ai`，不可改。
+`collection` 和 `serviceName` 按上表固定，随服务类型变化；`profile` / `branch` 规则各服务相同。
 
 用户未明确服务或环境时**必须询问**，不要猜测。
 
@@ -29,6 +30,8 @@ description: 通过 Jenkins 触发算法服务镜像构建与 K8s 部署。与 g
 - 「帮我把投图服务发布到预生产」→ 并行两次构建：`production` + `release`，两个 serviceName
 - 「投图服务发布到预生产和算法重构」→ **四个构建全部并行**（2 环境 × 2 serviceName），不要等一个环境完成再发另一个
 - 「数据处理服务发布到算法重构」→ 一次构建：`suanfa` + `dev`，`ai-algorithm-stp-convert`
+- 「发布 drawing2d 到算法重构环境」→ 一次构建：`front-web-apps` + `do-web-apps-drawing`，`suanfa` + `dev`
+- 「drawing2d 发布到预发版环境」→ 一次构建：`production` + `release`
 
 ## 固定参数（勾选框）
 
@@ -36,7 +39,7 @@ description: 通过 Jenkins 触发算法服务镜像构建与 K8s 部署。与 g
 
 | 参数 | 默认值 |
 |------|--------|
-| `collection` | `python-ai` |
+| `collection` | 见上表（投图/数据处理=`python-ai`，drawing2d=`front-web-apps`） |
 | `CleanWorkSpace` | `false` |
 | `DeployToK8S` | `true` |
 | `Rsync` | `false` |
@@ -86,7 +89,7 @@ HTTP_CODE=$(curl -sS -D /tmp/jenkins_hdr.txt -o /dev/null -w '%{http_code}' -X P
   -u "$JENKINS_USER:$JENKINS_TOKEN" \
   -H "$CRUMB_FIELD: $CRUMB" \
   "$JENKINS_URL/job/$JOB/buildWithParameters" \
-  --data-urlencode "collection=python-ai" \
+  --data-urlencode "collection=<COLLECTION>" \
   --data-urlencode "serviceName=<SERVICE>" \
   --data-urlencode "profile=<PROFILE>" \
   --data-urlencode "branch=<BRANCH>" \
@@ -148,6 +151,12 @@ bash scripts/release.sh --service projection --env preprod --env refactor
 
 # 数据处理 → 算法重构
 bash scripts/release.sh --service dataproc --env refactor
+
+# drawing2d → 算法重构
+bash scripts/release.sh --service drawing2d --env refactor
+
+# drawing2d → 预发版 + 算法重构（2 个构建并行）
+bash scripts/release.sh --service drawing2d --env preprod,refactor
 ```
 
 ## 完成后报告
@@ -166,5 +175,6 @@ bash scripts/release.sh --service dataproc --env refactor
 - **不要**用 `lastBuild`；**不要**对同一 (环境, serviceName) 触发两次。
 - **多个环境必须并行触发**，不要串行等待前一个环境完成。
 - 投图服务单环境 = 两个 serviceName 并行；双环境 = 四个构建全部并行。
+- drawing2d 单环境 = 一个 serviceName；双环境 = 两个构建并行。
 - 用户要求修改 `CleanWorkSpace`、`DeployToK8S`、`Rsync`、`Reverse` 时按用户指定覆盖默认值。
 - 本 skill 不负责 Python 包发包；git 发版走 `algorithm-service-release`。

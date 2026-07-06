@@ -14,7 +14,7 @@ SERVICE_TYPE=""
 ENVS=()
 
 usage() {
-  echo "Usage: $0 --service projection|dataproc --env preprod|refactor|preprod,refactor"
+  echo "Usage: $0 --service projection|dataproc|drawing2d --env preprod|refactor|preprod,refactor"
   echo "       $0 --service projection --env preprod --env refactor"
   exit 1
 }
@@ -42,8 +42,9 @@ done
 [[ -n "$SERVICE_TYPE" && ${#ENVS[@]} -gt 0 ]] || usage
 
 case "$SERVICE_TYPE" in
-  projection) SERVICES=("ai-python-auto-dimension" "ai-python-auto-dimension-part") ;;
-  dataproc)   SERVICES=("ai-algorithm-stp-convert") ;;
+  projection) COLLECTION="python-ai"; SERVICES=("ai-python-auto-dimension" "ai-python-auto-dimension-part") ;;
+  dataproc)   COLLECTION="python-ai"; SERVICES=("ai-algorithm-stp-convert") ;;
+  drawing2d)  COLLECTION="front-web-apps"; SERVICES=("do-web-apps-drawing") ;;
   *) echo "Unknown service: $SERVICE_TYPE"; exit 1 ;;
 esac
 
@@ -100,7 +101,7 @@ trigger_one() {
     -u "$JENKINS_USER:$JENKINS_TOKEN" \
     -H "$CRUMB_FIELD: $CRUMB" \
     "$JENKINS_URL/job/$JOB/buildWithParameters" \
-    --data-urlencode "collection=python-ai" \
+    --data-urlencode "collection=$COLLECTION" \
     --data-urlencode "serviceName=$svc" \
     --data-urlencode "profile=$profile" \
     --data-urlencode "branch=$branch" \
@@ -121,7 +122,7 @@ trigger_one() {
     exit 1
   fi
   echo "$qid" > "$WORKDIR/queue_$idx"
-  echo "Triggered [$env] $svc (profile=$profile branch=$branch) -> queue $qid"
+  echo "Triggered [$env] $svc (collection=$COLLECTION profile=$profile branch=$branch) -> queue $qid"
 }
 
 resolve_build_no() {
@@ -209,7 +210,7 @@ for env in "${ENVS[@]}"; do
   profile=$(env_profile "$env")
   branch=$(env_branch "$env")
   echo ""
-  echo "[$env] profile=$profile branch=$branch"
+  echo "[$env] profile=$profile branch=$branch collection=$COLLECTION"
   idx=0
   while [[ $idx -lt $TASK_COUNT ]]; do
     if [[ "${TASK_ENVS[$idx]}" == "$env" ]]; then
