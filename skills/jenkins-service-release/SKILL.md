@@ -27,6 +27,7 @@ description: 通过 Jenkins 触发算法服务镜像构建与 K8s 部署。与 g
 
 示例：
 - 「帮我把投图服务发布到预生产」→ 并行两次构建：`production` + `release`，两个 serviceName
+- 「投图服务发布到预生产和算法重构」→ **四个构建全部并行**（2 环境 × 2 serviceName），不要等一个环境完成再发另一个
 - 「数据处理服务发布到算法重构」→ 一次构建：`suanfa` + `dev`，`ai-algorithm-stp-convert`
 
 ## 固定参数（勾选框）
@@ -59,10 +60,10 @@ JOB="build_general_service_image"
 
 ## 触发与轮询原则
 
-1. **每个 `serviceName` 只触发一次**，禁止重复 POST。
+1. **每个 (环境, serviceName) 组合只触发一次**，禁止重复 POST。
 2. **禁止用 `lastBuild` 识别本次构建**——并发时 `lastBuild` 会指向别人的构建，导致误判或重复触发。
-3. **投图服务的多个 `serviceName` 并行触发、并行等待**，不要串行「等第一个完成再触发第二个」。
-4. 触发后从响应头 `Location` 取 queue id，再轮询 queue item 拿到 build 号，最后轮询 build 状态。
+3. **所有环境、所有 serviceName 一次性并行触发、并行等待**——不要「预生产完成后再触发算法重构」。
+4. 触发后从响应头 `Location` 取 queue id，再轮询 queue item 拿到 build 号，最后在一个循环里轮询全部 build 状态。
 
 ## 流程
 
@@ -76,9 +77,9 @@ CRUMB=$(echo "$CRUMB_JSON" | python3 -c "import sys,json; print(json.load(sys.st
 CRUMB_FIELD=$(echo "$CRUMB_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin)['crumbRequestField'])")
 ```
 
-### 2. 并行触发所有 serviceName
+### 2. 并行触发所有 (环境 × serviceName)
 
-对每个 `<SERVICE>` 各 POST **一次**，保存 `service → queue_id` 映射：
+对用户指定的**每个环境**，对每个 `serviceName` 各 POST **一次**。多个环境时**全部同时触发**，不要按环境串行。
 
 ```bash
 HTTP_CODE=$(curl -sS -D /tmp/jenkins_hdr.txt -o /dev/null -w '%{http_code}' -X POST \
@@ -101,7 +102,7 @@ QUEUE_ID=$(grep -i '^location:' /tmp/jenkins_hdr.txt | sed 's|.*/queue/item/||;s
 - 成功：HTTP **201**（偶发 302）
 - 失败：立即停止，报告 HTTP 码和响应体，**不要 retry 同一个 serviceName**
 
-投图服务：对两个 serviceName **连续触发两次**（中间不等待），得到两个 queue_id。
+投图服务 + 两个环境：共 **4 次 POST 全部并行**（预生产×2 + 算法重构×2）。
 
 ### 3. 从 queue 解析 build 号
 
@@ -134,11 +135,16 @@ Console 链接：`$JENKINS_URL/job/$JOB/<BUILD_NO>/console`
 ## 脚本用法
 
 ```bash
-# 投图 → 算法重构（并行触发两个 serviceName）
+# 投图 → 算法重构
 bash scripts/release.sh --service projection --env refactor
 
 # 投图 → 预生产
 bash scripts/release.sh --service projection --env preprod
+
+# 投图 → 预生产 + 算法重构（4 个构建全部并行）
+bash scripts/release.sh --service projection --env preprod,refactor
+# 或
+bash scripts/release.sh --service projection --env preprod --env refactor
 
 # 数据处理 → 算法重构
 bash scripts/release.sh --service dataproc --env refactor
@@ -157,7 +163,8 @@ bash scripts/release.sh --service dataproc --env refactor
 
 - **不要**修改 git config，**不要**操作 git 分支或 tag。
 - **不要**在对话中打印 token 或凭证文件内容。
-- **不要**用 `lastBuild`；**不要**对同一 serviceName 触发两次。
-- 投图服务 = 两个 serviceName **并行**构建，不是串行。
+- **不要**用 `lastBuild`；**不要**对同一 (环境, serviceName) 触发两次。
+- **多个环境必须并行触发**，不要串行等待前一个环境完成。
+- 投图服务单环境 = 两个 serviceName 并行；双环境 = 四个构建全部并行。
 - 用户要求修改 `CleanWorkSpace`、`DeployToK8S`、`Rsync`、`Reverse` 时按用户指定覆盖默认值。
 - 本 skill 不负责 Python 包发包；git 发版走 `algorithm-service-release`。

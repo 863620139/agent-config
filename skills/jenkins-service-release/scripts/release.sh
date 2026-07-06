@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Jenkins 并行发版脚本
+# Jenkins 并行发版脚本（兼容 macOS bash 3.2）
+# 支持多 serviceName、多环境同时并行触发
 set -euo pipefail
 
 JENKINS_USER=$(cat /Users/jackson/secret/jenkins/username)
@@ -10,22 +11,35 @@ POLL_INTERVAL=30
 TIMEOUT=1800
 
 SERVICE_TYPE=""
-ENV_TYPE=""
+ENVS=()
 
 usage() {
-  echo "Usage: $0 --service projection|dataproc --env preprod|refactor"
+  echo "Usage: $0 --service projection|dataproc --env preprod|refactor|preprod,refactor"
+  echo "       $0 --service projection --env preprod --env refactor"
   exit 1
+}
+
+add_env() {
+  local raw="$1"
+  local part
+  IFS=',' read -ra PARTS <<< "$raw"
+  for part in "${PARTS[@]}"; do
+    case "$part" in
+      preprod|refactor) ENVS+=("$part") ;;
+      *) echo "Unknown env: $part"; exit 1 ;;
+    esac
+  done
 }
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --service) SERVICE_TYPE="$2"; shift 2 ;;
-    --env) ENV_TYPE="$2"; shift 2 ;;
+    --env) add_env "$2"; shift 2 ;;
     *) usage ;;
   esac
 done
 
-[[ -n "$SERVICE_TYPE" && -n "$ENV_TYPE" ]] || usage
+[[ -n "$SERVICE_TYPE" && ${#ENVS[@]} -gt 0 ]] || usage
 
 case "$SERVICE_TYPE" in
   projection) SERVICES=("ai-python-auto-dimension" "ai-python-auto-dimension-part") ;;
@@ -33,20 +47,52 @@ case "$SERVICE_TYPE" in
   *) echo "Unknown service: $SERVICE_TYPE"; exit 1 ;;
 esac
 
-case "$ENV_TYPE" in
-  preprod)  PROFILE="production"; BRANCH="release" ;;
-  refactor) PROFILE="suanfa";     BRANCH="dev" ;;
-  *) echo "Unknown env: $ENV_TYPE"; exit 1 ;;
-esac
+env_profile() {
+  case "$1" in
+    preprod)  echo "production" ;;
+    refactor) echo "suanfa" ;;
+  esac
+}
+
+env_branch() {
+  case "$1" in
+    preprod)  echo "release" ;;
+    refactor) echo "dev" ;;
+  esac
+}
+
+# 展平为任务列表：每个 (环境, serviceName) 一项
+TASK_ENVS=()
+TASK_PROFILES=()
+TASK_BRANCHES=()
+TASK_SERVICES=()
+
+for env in "${ENVS[@]}"; do
+  profile=$(env_profile "$env")
+  branch=$(env_branch "$env")
+  for svc in "${SERVICES[@]}"; do
+    TASK_ENVS+=("$env")
+    TASK_PROFILES+=("$profile")
+    TASK_BRANCHES+=("$branch")
+    TASK_SERVICES+=("$svc")
+  done
+done
+
+TASK_COUNT=${#TASK_SERVICES[@]}
+
+WORKDIR=$(mktemp -d)
+trap 'rm -rf "$WORKDIR"' EXIT
 
 CRUMB_JSON=$(curl -sS -u "$JENKINS_USER:$JENKINS_TOKEN" "$JENKINS_URL/crumbIssuer/api/json")
 CRUMB=$(echo "$CRUMB_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin)['crumb'])")
 CRUMB_FIELD=$(echo "$CRUMB_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin)['crumbRequestField'])")
 
-declare -A SERVICE_QUEUE=()
-
 trigger_one() {
-  local svc="$1"
+  local idx="$1"
+  local svc="${TASK_SERVICES[$idx]}"
+  local profile="${TASK_PROFILES[$idx]}"
+  local branch="${TASK_BRANCHES[$idx]}"
+  local env="${TASK_ENVS[$idx]}"
   local hdr
   hdr=$(mktemp)
   local code
@@ -56,14 +102,14 @@ trigger_one() {
     "$JENKINS_URL/job/$JOB/buildWithParameters" \
     --data-urlencode "collection=python-ai" \
     --data-urlencode "serviceName=$svc" \
-    --data-urlencode "profile=$PROFILE" \
-    --data-urlencode "branch=$BRANCH" \
+    --data-urlencode "profile=$profile" \
+    --data-urlencode "branch=$branch" \
     --data-urlencode "CleanWorkSpace=false" \
     --data-urlencode "DeployToK8S=true" \
     --data-urlencode "Rsync=false" \
     --data-urlencode "Reverse=true")
   if [[ "$code" != "201" && "$code" != "302" ]]; then
-    echo "ERROR: trigger $svc failed HTTP $code"
+    echo "ERROR: trigger [$env] $svc failed HTTP $code" >&2
     rm -f "$hdr"
     exit 1
   fi
@@ -71,14 +117,12 @@ trigger_one() {
   qid=$(grep -i '^location:' "$hdr" | sed 's|.*/queue/item/||;s|/.*||' | tr -d '\r')
   rm -f "$hdr"
   if [[ -z "$qid" ]]; then
-    echo "ERROR: no queue id for $svc"
+    echo "ERROR: no queue id for [$env] $svc" >&2
     exit 1
   fi
-  SERVICE_QUEUE["$svc"]="$qid"
-  echo "Triggered $svc -> queue $qid"
+  echo "$qid" > "$WORKDIR/queue_$idx"
+  echo "Triggered [$env] $svc (profile=$profile branch=$branch) -> queue $qid"
 }
-
-declare -A SERVICE_BUILD=()
 
 resolve_build_no() {
   local qid="$1"
@@ -96,63 +140,88 @@ resolve_build_no() {
   return 1
 }
 
-echo "=== Trigger (parallel) profile=$PROFILE branch=$BRANCH ==="
-for svc in "${SERVICES[@]}"; do
-  trigger_one "$svc" &
+echo "=== Trigger ${TASK_COUNT} builds in parallel (envs: ${ENVS[*]}) ==="
+idx=0
+while [[ $idx -lt $TASK_COUNT ]]; do
+  trigger_one "$idx" &
+  idx=$((idx + 1))
 done
 wait
 
 echo "=== Resolve build numbers ==="
-for svc in "${SERVICES[@]}"; do
-  qid="${SERVICE_QUEUE[$svc]}"
-  build_no=$(resolve_build_no "$qid") || { echo "ERROR: timeout resolving build for $svc (queue $qid)"; exit 1; }
-  SERVICE_BUILD["$svc"]="$build_no"
-  echo "$svc -> build #$build_no"
+idx=0
+while [[ $idx -lt $TASK_COUNT ]]; do
+  env="${TASK_ENVS[$idx]}"
+  svc="${TASK_SERVICES[$idx]}"
+  qid=$(cat "$WORKDIR/queue_$idx")
+  build_no=$(resolve_build_no "$qid") || { echo "ERROR: timeout resolving build for [$env] $svc (queue $qid)"; exit 1; }
+  echo "$build_no" > "$WORKDIR/build_$idx"
+  echo "[$env] $svc -> build #$build_no"
+  idx=$((idx + 1))
 done
 
-echo "=== Wait for builds ==="
-declare -A SERVICE_RESULT=()
-declare -A SERVICE_DISPLAY=()
+echo "=== Wait for all builds ==="
 ELAPSED=0
-PENDING=("${SERVICES[@]}")
+PENDING_IDX=()
+idx=0
+while [[ $idx -lt $TASK_COUNT ]]; do
+  PENDING_IDX+=("$idx")
+  idx=$((idx + 1))
+done
 
-while [[ $ELAPSED -lt $TIMEOUT && ${#PENDING[@]} -gt 0 ]]; do
+while [[ $ELAPSED -lt $TIMEOUT && ${#PENDING_IDX[@]} -gt 0 ]]; do
   STILL=()
-  for svc in "${PENDING[@]}"; do
-    build_no="${SERVICE_BUILD[$svc]}"
+  for i in "${PENDING_IDX[@]}"; do
+    env="${TASK_ENVS[$i]}"
+    svc="${TASK_SERVICES[$i]}"
+    build_no=$(cat "$WORKDIR/build_$i")
     read -r building result display < <(curl -sS -u "$JENKINS_USER:$JENKINS_TOKEN" \
       "$JENKINS_URL/job/$JOB/$build_no/api/json?tree=building,result,displayName" \
       | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('building',True), d.get('result') or 'RUNNING', d.get('displayName',''))")
     if [[ "$building" == "False" ]]; then
-      SERVICE_RESULT["$svc"]="${result:-UNKNOWN}"
-      SERVICE_DISPLAY["$svc"]="$display"
-      echo "[$ELAPSED s] $svc #$build_no -> $result ($display)"
+      echo "$result" > "$WORKDIR/result_$i"
+      echo "$display" > "$WORKDIR/display_$i"
+      echo "[$ELAPSED s] [$env] $svc #$build_no -> $result ($display)"
     else
-      echo "[$ELAPSED s] $svc #$build_no -> RUNNING ($display)"
-      STILL+=("$svc")
+      echo "[$ELAPSED s] [$env] $svc #$build_no -> RUNNING ($display)"
+      STILL+=("$i")
     fi
   done
-  PENDING=("${STILL[@]}")
-  [[ ${#PENDING[@]} -eq 0 ]] && break
+  if [[ ${#STILL[@]} -eq 0 ]]; then
+    PENDING_IDX=()
+  else
+    PENDING_IDX=("${STILL[@]}")
+  fi
+  [[ ${#PENDING_IDX[@]} -eq 0 ]] && break
   sleep "$POLL_INTERVAL"
   ELAPSED=$((ELAPSED + POLL_INTERVAL))
 done
 
-if [[ ${#PENDING[@]} -gt 0 ]]; then
-  echo "ERROR: timeout waiting for: ${PENDING[*]}"
+if [[ ${#PENDING_IDX[@]} -gt 0 ]]; then
+  echo "ERROR: timeout waiting for builds"
   exit 1
 fi
 
 echo ""
 echo "=== Summary ==="
-echo "Environment: profile=$PROFILE branch=$BRANCH"
 FAIL=0
-for svc in "${SERVICES[@]}"; do
-  build_no="${SERVICE_BUILD[$svc]}"
-  result="${SERVICE_RESULT[$svc]}"
-  display="${SERVICE_DISPLAY[$svc]}"
-  echo "- $svc: build #$build_no | $result | $display"
-  echo "  console: $JENKINS_URL/job/$JOB/$build_no/console"
-  [[ "$result" != "SUCCESS" ]] && FAIL=1
+for env in "${ENVS[@]}"; do
+  profile=$(env_profile "$env")
+  branch=$(env_branch "$env")
+  echo ""
+  echo "[$env] profile=$profile branch=$branch"
+  idx=0
+  while [[ $idx -lt $TASK_COUNT ]]; do
+    if [[ "${TASK_ENVS[$idx]}" == "$env" ]]; then
+      svc="${TASK_SERVICES[$idx]}"
+      build_no=$(cat "$WORKDIR/build_$idx")
+      result=$(cat "$WORKDIR/result_$idx")
+      display=$(cat "$WORKDIR/display_$idx")
+      echo "  - $svc: build #$build_no | $result | $display"
+      echo "    console: $JENKINS_URL/job/$JOB/$build_no/console"
+      [[ "$result" != "SUCCESS" ]] && FAIL=1
+    fi
+    idx=$((idx + 1))
+  done
 done
 exit "$FAIL"
