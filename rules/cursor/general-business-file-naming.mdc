@@ -1,0 +1,32 @@
+---
+description: 业务型 Python 模块命名须带 general_ 前缀（do_dimension）
+globs: dodimension/**/business/**/*.py,dodimension/**/relation_manager/general_*.py
+alwaysApply: true
+---
+
+# 业务型文件命名：general_ 前缀
+
+在 do_dimension 中新增**业务型** Python 模块时，文件名必须以 `general_` 开头。
+
+## 适用范围
+
+- `dodimension/**/business/` 下的 collector、manager、creator、util 等业务逻辑模块
+- `dodimension/relationship/relation_manager/` 下通用业务策略类（与现有 `general_*` 一致）
+
+## 规则
+
+```python
+# ❌ BAD
+bending_mixbenchmark_hole_locating_collector.py
+hole_benchmark_manager.py
+
+# ✅ GOOD
+general_bending_mixbenchmark_hole_locating_collector.py
+general_hole_benchmark_manager.py
+```
+
+## 说明
+
+- `general_` 表示通用业务逻辑，区别于品系专用（如 `xinbo_*`）或单客户 package。
+- 类名、函数名不必重复 `general` 前缀；以**文件名**为准。
+- 非业务模块（类型定义、接口、纯几何 util 等）不适用此规则。
