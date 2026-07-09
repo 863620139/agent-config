@@ -8,6 +8,7 @@
 agent-config/
 ├── skills/                  # 通用 skill，Cursor / Claude Code / Codex 共用
 │   ├── commit-and-push/     # rebase upstream/dev → commit（类型前缀）→ push origin dev
+│   ├── debug-case-kb/       # debug 案例知识图谱（do_debug_case_graph）
 │   ├── debug-parametric/    # do_dimension 调试流程
 │   └── publish-package/     # dodimension 发包流程（手动指定版本号）
 ├── rules/
