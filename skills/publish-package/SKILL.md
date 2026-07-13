@@ -24,7 +24,7 @@ git rebase upstream/dev
 
 - 向用户报告 **stash 之后的工作区状态**和 **rebase 结果**（当前 HEAD、与 `upstream/dev` 是否对齐）。
 - 若 rebase 冲突：停止操作，报告冲突文件；提醒用户改动还在 stash `publish-package-auto` 里。不要自行乱解冲突或 `rebase --abort`（除非用户要求）。
-- **此处不要 stash pop**，等发包全部完成后再恢复（见步骤 6）。
+- **此处不要 stash pop**，等发包全部完成后再恢复（见步骤 7）。
 
 > 注意：后续 `commit-and-push` 默认用 `--include-untracked`，**不能**替代本步的 `--all` stash；被 gitignore 的未跟踪目录只有 `--all` 才会暂存。
 
